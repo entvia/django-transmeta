@@ -15,7 +15,6 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.core.management.color import no_style
 from django.db import connection, transaction
-from django.db import backend
 from django.db.models import get_models
 from django.db.models.fields import FieldDoesNotExist
 
@@ -24,6 +23,16 @@ from transmeta import (mandatory_language, get_real_fieldname,
 
 VALUE_DEFAULT = 'WITHOUT VALUE'
 
+try:
+    from django.db import backend
+    backend_is_mysql = 'mysql' in backend.__name__
+    backend_is_sqlite = 'sqlite' in backend.__name__
+except ImportError:
+    # for django 1.8+
+    print ('\nIt appears that you are using a version of Django with support for migrations.')
+    print ('\nYou probably want to use Django\'s makemigrations instead.')
+    backend_is_mysql = 'mysql' in settings.DATABASES['default']['ENGINE']
+    backend_is_sqlite = 'sqlite' in settings.DATABASES['default']['ENGINE']
 
 def ask_for_confirmation(sql_sentences, model_full_name, assume_yes):
     print ('\nSQL to synchronize "%s" schema:' % model_full_name)
@@ -65,45 +74,37 @@ class Command(BaseCommand):
         assume_yes = options.get('assume_yes', False)
         default_language = options.get('default_language', None)
 
-        # set manual transaction management
-        transaction.commit_unless_managed()
-        transaction.enter_transaction_management()
-        transaction.managed(True)
+        with transaction.atomic():
 
-        self.cursor = connection.cursor()
-        self.introspection = connection.introspection
+            self.cursor = connection.cursor()
+            self.introspection = connection.introspection
 
-        self.default_lang = default_language or mandatory_language()
+            self.default_lang = default_language or mandatory_language()
 
-        all_models = get_models()
-        found_db_change_fields = False
-        for model in all_models:
-            if hasattr(model._meta, 'translatable_fields'):
-                model_full_name = '%s.%s' % (model._meta.app_label, model._meta.module_name)
-                translatable_fields = get_all_translatable_fields(model, column_in_current_table=True)
-                db_table = model._meta.db_table
-                for field_name in translatable_fields:
-                    db_table_fields = self.get_table_fields(db_table)
-                    db_change_langs = list(set(list(self.get_db_change_languages(field_name, db_table_fields)) + [self.default_lang]))
-                    if db_change_langs:
-                        sql_sentences = self.get_sync_sql(field_name, db_change_langs, model, db_table_fields)
-                        if sql_sentences:
-                            found_db_change_fields = True
-                            print_db_change_langs(db_change_langs, field_name, model_full_name)
-                            execute_sql = ask_for_confirmation(sql_sentences, model_full_name, assume_yes)
-                            if execute_sql:
-                                print ('Executing SQL...')
-                                for sentence in sql_sentences:
-                                    self.cursor.execute(sentence)
-                                    # commit
-                                    transaction.commit()
-                                print ('Done')
-                            else:
-                                print ('SQL not executed')
-
-        if transaction.is_dirty():
-            transaction.commit()
-        transaction.leave_transaction_management()
+            all_models = get_models()
+            found_db_change_fields = False
+            for model in all_models:
+                if hasattr(model._meta, 'translatable_fields'):
+                    model_full_name = '%s.%s' % (model._meta.app_label, model._meta.model_name)
+                    translatable_fields = get_all_translatable_fields(model, column_in_current_table=True)
+                    db_table = model._meta.db_table
+                    for field_name in translatable_fields:
+                        db_table_fields = self.get_table_fields(db_table)
+                        db_change_langs = list(set(list(self.get_db_change_languages(field_name, db_table_fields)) + [self.default_lang]))
+                        if db_change_langs:
+                            sql_sentences = self.get_sync_sql(field_name, db_change_langs, model, db_table_fields)
+                            if sql_sentences:
+                                found_db_change_fields = True
+                                print_db_change_langs(db_change_langs, field_name, model_full_name)
+                                execute_sql = ask_for_confirmation(sql_sentences, model_full_name, assume_yes)
+                                if execute_sql:
+                                    print ('Executing SQL...')
+                                    for sentence in sql_sentences:
+                                        self.cursor.execute(sentence)
+                                        # commit
+                                    print ('Done')
+                                else:
+                                    print ('SQL not executed')
 
         if not found_db_change_fields:
             print ('\nNo new translatable fields detected')
@@ -197,17 +198,17 @@ class Command(BaseCommand):
                 field_column = new_field
                 col_type = self.get_type_of_db_field(field_name, model)
             field_sql = [style.SQL_FIELD(qn(field_column)), style.SQL_COLTYPE(col_type)]
-
-            alter_colum_set = 'ALTER COLUMN %s SET' % qn(field_column)
-            if default_f:
-                alter_colum_drop = 'ALTER COLUMN %s DROP' % qn(field_column)
-            not_null = style.SQL_KEYWORD('NOT NULL')
-
-            if 'mysql' in backend.__name__:
+            
+            if backend_is_mysql:
                 alter_colum_set = 'MODIFY %s %s' % (qn(field_column), col_type)
                 not_null = style.SQL_KEYWORD('NULL')
                 if default_f:
                     alter_colum_drop = 'MODIFY %s %s' % (qn(field_column), col_type)
+            else:
+                alter_colum_set = 'ALTER COLUMN %s SET' % qn(field_column)
+                if default_f:
+                    alter_colum_drop = 'ALTER COLUMN %s DROP' % qn(field_column)
+                not_null = style.SQL_KEYWORD('NOT NULL')
 
             # column creation
             if not new_field in db_table_fields:
@@ -239,14 +240,15 @@ class Command(BaseCommand):
                                         'null': style.SQL_KEYWORD('NULL'),
                                         }))
                         # changing to NOT NULL after having data copied
-                        sql_output.append("ALTER TABLE %s %s %s" % \
+                        if not backend_is_sqlite:
+                            sql_output.append("ALTER TABLE %s %s %s" % \
                                         (qn(db_table), alter_colum_set, \
                                         style.SQL_KEYWORD('NOT NULL')))
                 else:
                     f_required = self.get_field_required_in_db(db_table,
                                                            field_column,
                                                            value_not_implemented=True)
-                    if f_required:
+                    if f_required and not backend_is_sqlite:
                         sql_output.append(("ALTER TABLE %s %s %s" % 
                                         (qn(db_table), alter_colum_drop, not_null)))
 
