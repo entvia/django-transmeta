@@ -11,10 +11,15 @@ Transmeta is an application for translatable content in Django's models. Each
 language is stored and managed automatically in a different column at database
 level.
 
+About this fork
+===============
+
+This fork introduces support for Python 3 and Django 1.8+.
+
 Features
 ========
 
-* Automatic schema creation with translatable fields. 
+* Automatic schema creation with translatable fields.
 * Translatable fields integrated into Django's admin interface.
 * Command to synchronize database schema to add new translatable fields and new languages.
 
@@ -137,7 +142,7 @@ If you need to add new languages to the existing ones you only need to change yo
         ('fr', ugettext('French')),
     )
 
-If you're using a version of Django with native migrations (version 1.7 or later), you can use 
+If you're using a version of Django with native migrations (version 1.7 or later), you can use
 
     $ ./manage.py makemigrations
     $ ./manage.py migrate
@@ -196,7 +201,7 @@ Again, if you're using a version of Django with native migrations (version 1.7 o
 
 What the hell this command does?
 
-``sync_transmeta_db`` command not only creates new database columns for new translatable field... it copy data from old ``price`` field into one of languages, and that is why command ask you for destination language field for actual data. It's very important that the LANGUAGE_CODE and LANGUAGES (or TRANSMETA_DEFAULT_LANGUAGE, TRANSMETA_LANGUAGES) settings have good values.  
+``sync_transmeta_db`` command not only creates new database columns for new translatable field... it copy data from old ``price`` field into one of languages, and that is why command ask you for destination language field for actual data. It's very important that the LANGUAGE_CODE and LANGUAGES (or TRANSMETA_DEFAULT_LANGUAGE, TRANSMETA_LANGUAGES) settings have good values.
 
 This command also you can execute, when you want add a language to the site, or you want to change the default language in ``transmeta``. For this last case, you can define a variable in the settings file::
 
